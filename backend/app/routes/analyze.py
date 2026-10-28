@@ -10,13 +10,15 @@ from app.schemas import (
     AnalyzeResponse,
     HealthResponse,
     MedicineResult,
+    ModelMetrics,
     Savings,
     SearchResult,
 )
 from app.services.preprocess import preprocess_image
-from app.services.vision import extract_prescription
+from app.services.vision import extract_prescription, is_trocr_loaded
 from app.services.matcher import match_brand, match_generic, search_all
 from app.services.pricing import compute_savings
+from app.services.evaluator import build_model_metrics
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,14 +39,16 @@ async def health(request: Request) -> HealthResponse:
         status="ok",
         brands_loaded=len(brands_df) if brands_df is not None else 0,
         generics_loaded=len(generics_df) if generics_df is not None else 0,
+        trocr_loaded=is_trocr_loaded(),
     )
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(file: UploadFile = File(...)) -> AnalyzeResponse:
     """
-    Accept a prescription image, run Gemini Vision, fuzzy-match medicines,
-    and return structured results with price savings.
+    Accept a prescription image, run TrOCR OCR + rule-based parser,
+    fuzzy-match medicines to Jan Aushadhi generics, and return structured
+    results with price savings and model evaluation metrics.
     """
     settings = get_settings()
 
@@ -72,11 +76,11 @@ async def analyze(file: UploadFile = File(...)) -> AnalyzeResponse:
             status_code=422, detail=f"Could not process image: {exc}"
         ) from exc
 
-    # ── Gemini Vision ──────────────────────────────────────────────────────
+    # ── TrOCR Vision ───────────────────────────────────────────────────────
     try:
         extraction = extract_prescription(image_bytes)
     except Exception as exc:
-        logger.exception("Gemini extraction failed")
+        logger.exception("TrOCR extraction failed")
         raise HTTPException(
             status_code=502, detail=f"Vision service error: {exc}"
         ) from exc
@@ -128,6 +132,18 @@ async def analyze(file: UploadFile = File(...)) -> AnalyzeResponse:
     )
     total_savings = Savings(amount=round(total_saved, 2), percent=total_percent)
 
+    # ── Model Metrics ──────────────────────────────────────────────────────
+    predicted_names = [med.name for med in extraction.medicines]
+    metrics_dict = build_model_metrics(
+        predicted_text=extraction.raw_ocr_text or "",
+        avg_confidence=extraction.ocr_confidence or 0.0,
+        predicted_names=predicted_names,
+        medicine_results=medicine_results,
+        ground_truth_text=None,       # not available in /analyze
+        ground_truth_medicines=None,  # not available in /analyze
+    )
+    model_metrics = ModelMetrics(**metrics_dict)
+
     return AnalyzeResponse(
         prescription={
             "patient_name": extraction.patient_name,
@@ -135,9 +151,12 @@ async def analyze(file: UploadFile = File(...)) -> AnalyzeResponse:
             "date": extraction.date,
             "overall_legibility": extraction.overall_legibility,
             "notes": extraction.notes,
+            "ocr_confidence": extraction.ocr_confidence,
+            "raw_ocr_text": extraction.raw_ocr_text,
         },
         medicines=medicine_results,
         total_savings=total_savings,
+        model_metrics=model_metrics,
         disclaimer=DISCLAIMER,
     )
 

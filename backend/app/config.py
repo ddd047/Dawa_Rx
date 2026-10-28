@@ -1,5 +1,3 @@
-import os
-
 """Application configuration loaded from environment variables."""
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -8,8 +6,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """All settings are sourced from the .env file or environment."""
 
-    gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
+    # TrOCR model (HuggingFace — runs locally, no API key needed)
+    trocr_model: str = "microsoft/trocr-base-handwritten"
+    trocr_device: str = "cpu"  # set to "cuda" if GPU is available
+
+    # API URL (used by frontend)
     next_public_api_url: str = "http://localhost:3000"
 
     # Matching thresholds
