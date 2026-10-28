@@ -5,6 +5,9 @@ Startup sequence:
 1. Load and clean brand CSV (A_Z_medicines_dataset_of_India.csv).
 2. Parse and clean Jan Aushadhi CSV (sarkariyojana.com-...).
 3. Inject DataFrames into the matcher module.
+4. Preload TrOCR model (microsoft/trocr-large-handwritten) into memory.
+   Model weights are downloaded once (~1.2 GB) and cached at ~/.cache/huggingface/.
+   No API key required — all inference is fully local and offline.
 """
 from __future__ import annotations
 import logging
@@ -16,7 +19,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routes.analyze import router
+from app.routes.analyze import router as analyze_router
+from app.routes.evaluate import router as evaluate_router
 from app.services import matcher
 from app.services.normalizer import normalize_name, normalize_composition, extract_strength
 
@@ -139,7 +143,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(router, prefix="/api")
+    app.include_router(analyze_router, prefix="/api")
+    app.include_router(evaluate_router, prefix="/api")
 
     @app.on_event("startup")
     async def startup() -> None:
@@ -150,6 +155,16 @@ def create_app() -> FastAPI:
         # Also store on app.state for health route
         app.state.brands_df = brands_df
         app.state.generics_df = generics_df
+        # Preload TrOCR model (downloads ~350 MB on first run, cached after)
+        from app.services.vision import load_trocr_model
+        loaded = load_trocr_model(
+            model_name=settings.trocr_model,
+            device=settings.trocr_device,
+        )
+        if loaded:
+            logger.info("✅ TrOCR model ready")
+        else:
+            logger.warning("⚠️  TrOCR model failed to load — mock responses will be used")
         logger.info("🚀 DawaRx API ready")
 
     return app
